@@ -104,6 +104,10 @@ final class Prefs {
     static boolean quotes() { return sp().getBoolean("quotes", Config.SHOW_CRYPTO); }
     static void setQuotes(boolean on) { put("quotes", on); }
 
+    /** The News card (only with news_rss in config.properties). */
+    static boolean news() { return !Config.NEWS_RSS.trim().isEmpty() && sp().getBoolean("news", true); }
+    static void setNews(boolean on) { put("news", on); }
+
     static boolean coin(int i) { return sp().getBoolean("coin" + i, true); }
     static void setCoin(int i, boolean on) { put("coin" + i, on); }
 

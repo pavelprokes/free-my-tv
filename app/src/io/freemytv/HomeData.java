@@ -4,13 +4,16 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Xml;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.xmlpull.v1.XmlPullParser;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -73,6 +76,8 @@ final class HomeData {
     void settingsChanged() {
         pricesAt = 0;
         weatherAt = 0;
+        newsAt = 0;
+        newsFailedAt = 0;
         pricesFailedAt = 0;
         weatherFailedAt = 0;
     }
@@ -110,15 +115,27 @@ final class HomeData {
     final double[] prices = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
     /** 24 h change (%), in the same order. */
     final double[] changes = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
-    volatile long pricesAt, weatherAt;
+    volatile long pricesAt, weatherAt, newsAt;
     volatile Weather weather = new Weather();
+
+    /** A headline from the news_rss feed, and when it was published (0 = the feed didn't say). */
+    static final class Headline {
+        final String title;
+        final long at;
+        Headline(String title, long at) { this.title = title; this.at = at; }
+    }
+
+    /** The feed's own name ("ČT24 — Výběr redakce") and its latest headlines, newest first. */
+    volatile String newsSource = "";
+    volatile List<Headline> news = new ArrayList<>();
 
     private final SharedPreferences cache;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
-    private volatile boolean fetchingPrices, fetchingWeather;
-    private volatile long pricesFailedAt, weatherFailedAt;
+    private volatile boolean fetchingPrices, fetchingWeather, fetchingNews;
+    private volatile long pricesFailedAt, weatherFailedAt, newsFailedAt;
+    private static final long NEWS_EVERY = 15 * 60_000L;
 
     private HomeData(Context c) {
         cache = c.getSharedPreferences("homedata", Context.MODE_PRIVATE);
@@ -127,6 +144,11 @@ final class HomeData {
                 String p = cache.getString("prices", null);
                 if (p != null) parsePrices(p);
                 pricesAt = cache.getLong("pricesAt", 0);
+            }
+            String n = cache.getString("news", null);
+            if (n != null && Config.NEWS_RSS.trim().equals(cache.getString("newsUrl", ""))) {
+                parseNews(n);
+                newsAt = cache.getLong("newsAt", 0);
             }
             String w = cache.getString("weather", null);
             // The cached forecast is for the city it was fetched for; another city means fetch again.
@@ -158,6 +180,23 @@ final class HomeData {
                     AppLog.w("prices: " + e.getMessage());
                 } finally {
                     fetchingPrices = false;
+                }
+            });
+        }
+        if (!fetchingNews && Prefs.news() && (now - newsAt > NEWS_EVERY || now < newsAt) && !failedRecently(newsFailedAt, now)) {
+            fetchingNews = true;
+            io.execute(() -> {
+                try {
+                    String url = Config.NEWS_RSS.trim(), body = get(url);
+                    parseNews(body);
+                    newsAt = System.currentTimeMillis();
+                    cache.edit().putString("news", body).putLong("newsAt", newsAt).putString("newsUrl", url).apply();
+                    notifyListeners();
+                } catch (Exception e) {
+                    newsFailedAt = System.currentTimeMillis();
+                    AppLog.w("news: " + e.getMessage());
+                } finally {
+                    fetchingNews = false;
                 }
             });
         }
@@ -205,6 +244,51 @@ final class HomeData {
             }
         }
         if (found == 0) pricesAt = 0;   // cached in another currency (config changed): fetch again
+    }
+
+    /** RSS 2.0: the channel's title, then each item's title and pubDate (RFC 822). */
+    private void parseNews(String body) throws Exception {
+        XmlPullParser x = Xml.newPullParser();
+        x.setInput(new StringReader(body));
+        SimpleDateFormat rfc822 = new SimpleDateFormat("EEE, d MMM yyyy HH:mm:ss Z", Locale.US);
+        String source = "", title = null, tag = "";
+        long at = 0;
+        boolean inItem = false;
+        List<Headline> list = new ArrayList<>();
+        for (int e = x.getEventType(); e != XmlPullParser.END_DOCUMENT && list.size() < 8; e = x.next()) {
+            if (e == XmlPullParser.START_TAG) {
+                tag = x.getName();
+                if (tag.equals("item")) {
+                    inItem = true;
+                    title = null;
+                    at = 0;
+                }
+            } else if (e == XmlPullParser.TEXT) {
+                String text = x.getText().trim();
+                if (text.isEmpty()) continue;
+                if (inItem && tag.equals("title")) title = text;
+                else if (inItem && tag.equals("pubDate")) {
+                    try { at = rfc822.parse(text).getTime(); } catch (ParseException ignored) {}
+                } else if (!inItem && tag.equals("title") && source.isEmpty()) source = text;
+            } else if (e == XmlPullParser.END_TAG) {
+                if (x.getName().equals("item")) {
+                    if (title != null) list.add(new Headline(title, at));
+                    inItem = false;
+                }
+                tag = "";
+            }
+        }
+        if (list.isEmpty()) throw new IOException("no headlines in the feed");
+        newsSource = source;
+        news = list;
+    }
+
+    /** "5 min ago", "3 h ago", "2 days ago": how old a headline is. */
+    static String ago(long at) {
+        long minutes = Math.max(0, System.currentTimeMillis() - at) / 60_000;
+        if (minutes < 60) return Ui.trf("{n} min ago", "n", minutes);
+        if (minutes < 24 * 60) return Ui.trf("{n} h ago", "n", minutes / 60);
+        return Ui.plural("plural|one:{n} day ago|other:{n} days ago", minutes / 1440);
     }
 
     private static Weather parseWeather(String body) throws Exception {
