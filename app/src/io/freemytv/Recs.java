@@ -44,8 +44,12 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
-        boolean detailed;
+        String trailer;         // YouTube video id (the In Cinemas tab opens it)
+        boolean detailed, cinema;
     }
+
+    /** The home screen's "In Cinemas" tab: what's in your country's cinemas now (now(CINEMA)). */
+    static final String CINEMA = "cinema";
 
     interface Listener { void onRecs(); }
 
@@ -53,7 +57,7 @@ final class Recs {
     private static final String IMAGES = "https://image.tmdb.org/t/p/original";
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 3;
+    private static final int CACHE_VERSION = 4;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
     private static final String[][] SERVICES = {
@@ -97,6 +101,7 @@ final class Recs {
     private final Map<String, Backdrop> images = new LinkedHashMap<>();   // this hour's, built and ready to draw
     private final java.util.Set<String> pending = new java.util.HashSet<>();
     private volatile List<Pick> picks = new ArrayList<>();
+    private volatile List<Pick> cinema = new ArrayList<>();
     private volatile int period = -1;
     private volatile long listAt;
     private volatile boolean fetching;
@@ -112,6 +117,8 @@ final class Recs {
         try {
             String saved = cache.getString("picks", null);
             if (saved != null) picks = parse(new JSONArray(saved));
+            String savedCinema = cache.getString("cinema", null);
+            if (savedCinema != null) cinema = parse(new JSONArray(savedCinema));
             period = cache.getInt("period", -1);
             listAt = cache.getLong("listAt", 0);
             listLanguage = cache.getString("language", cache.getBoolean("english", false) ? "en" : "pt");
@@ -170,8 +177,10 @@ final class Recs {
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
-        for (Pick p : picks) {
-            if ((kind == null || kind.equals(p.kind))
+        boolean inCinemas = CINEMA.equals(kind);
+        for (Pick p : inCinemas ? cinema : picks) {
+            if (inCinemas ? !p.detailed || p.trailer != null    // no trailer: nothing for OK to open
+                    : (kind == null || kind.equals(p.kind))
                     && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)))) list.add(p);   // app missing: skip
         }
         if (list.isEmpty()) return list;
@@ -244,7 +253,10 @@ final class Recs {
         fetching = true;
         io.execute(() -> {
             try {
-                if (stale) fetchList(p);
+                if (stale) {
+                    fetchList(p);
+                    fetchCinema();
+                }
                 // One failing title doesn't stop the others; whatever has no app on the TV is not downloaded.
                 int failures = 0, tried = 0;
                 String last = "";
@@ -252,7 +264,7 @@ final class Recs {
                     tried++;
                     try {
                         if (!pick.detailed) fetchDetails(pick);
-                        if (pick.pkg != null) download(pick);
+                        if (pick.pkg != null || pick.cinema) download(pick);
                     } catch (Exception e) {
                         failures++;
                         last = e.getMessage() == null ? e.toString() : e.getMessage();
@@ -348,7 +360,7 @@ final class Recs {
     List<Pick> wanted() {
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (String kind : new String[] {null, "movie", "tv"}) {
+        for (String kind : new String[] {null, "movie", "tv", CINEMA}) {
             for (Pick p : now(kind)) if (seen.add(key(p))) out.add(p);
         }
         return out;
@@ -356,7 +368,7 @@ final class Recs {
 
     /** Movies and shows are numbered separately on TMDB: a pick is identified by type + number. */
     static String key(Pick p) {
-        return p.kind + ":" + p.id;
+        return (p.cinema ? CINEMA : p.kind) + ":" + p.id;
     }
 
     private void notifyListeners() {
@@ -452,10 +464,20 @@ final class Recs {
         list.add(p);
     }
 
+    /** In your country's cinemas now (tmdb_region), most popular first: the In Cinemas tab. */
+    private void fetchCinema() throws Exception {
+        JSONArray playing = get("/movie/now_playing?region=" + REGION + "&language=" + lang()).getJSONArray("results");
+        List<Pick> list = new ArrayList<>();
+        for (int i = 0; i < playing.length() && list.size() < 12; i++) add(list, playing.getJSONObject(i), "movie");
+        for (Pick p : list) p.cinema = true;
+        cinema = list;
+    }
+
     /** Genre, runtime (or seasons) and the service it's on, among the ones the TV has. */
     private void fetchDetails(Pick p) throws Exception {
         JSONObject o = get("/" + p.kind + "/" + p.id
-                + "?language=" + lang() + "&append_to_response=watch/providers,images&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
+                + "?language=" + lang() + "&append_to_response=watch/providers,images" + (p.cinema ? ",videos&include_video_language=" + Ui.language.replaceAll("-.*", "") + ",en" : "")
+                + "&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
         p.title = title(p, o);
         String best = bestBackdrop(o.optJSONObject("images"));
         if (best != null) p.backdrop = best;
@@ -484,6 +506,10 @@ final class Recs {
             }
         }
         if (p.app != null) parts.add(SERVICE_NAME.get(p.app));
+        if (p.cinema) {
+            parts.add(Ui.tr("In Cinemas"));
+            p.trailer = trailer(o.optJSONObject("videos"));
+        }
         p.meta = String.join(" · ", parts);
         p.detailed = true;
     }
@@ -519,6 +545,23 @@ final class Recs {
             case "Talk": return Ui.tr("genre|Talk");
             default: return name;
         }
+    }
+
+    /** A YouTube trailer's video id, or null: in the TV's language first, then official, then any. */
+    private static String trailer(JSONObject videos) {
+        JSONArray list = videos == null ? null : videos.optJSONArray("results");
+        String lang = Ui.language.replaceAll("-.*", ""), best = null;
+        int bestScore = -1;
+        for (int i = 0; list != null && i < list.length(); i++) {
+            JSONObject v = list.optJSONObject(i);
+            if (v == null || !"YouTube".equals(v.optString("site")) || !"Trailer".equals(v.optString("type"))) continue;
+            int score = (lang.equals(v.optString("iso_639_1")) ? 2 : 0) + (v.optBoolean("official") ? 1 : 0);
+            if (score > bestScore) {
+                bestScore = score;
+                best = v.optString("key");
+            }
+        }
+        return best == null || best.isEmpty() ? null : best;
     }
 
     /**
@@ -674,17 +717,22 @@ final class Recs {
 
     private void save() {
         try {
-            JSONArray a = new JSONArray();
-            for (Pick p : picks) {
-                a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
-                        .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
-                        .put("detailed", p.detailed));
-            }
-            cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
+            cache.edit().putString("picks", json(picks).toString()).putString("cinema", json(cinema).toString())
+                    .putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION).apply();
         } catch (Exception ignored) {
         }
+    }
+
+    private static JSONArray json(List<Pick> list) throws org.json.JSONException {
+        JSONArray a = new JSONArray();
+        for (Pick p : list) {
+            a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
+                    .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
+                    .put("detailed", p.detailed).put("cinema", p.cinema).put("trailer", p.trailer == null ? "" : p.trailer));
+        }
+        return a;
     }
 
     private static List<Pick> parse(JSONArray a) {
@@ -701,6 +749,8 @@ final class Recs {
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
+            p.cinema = o.optBoolean("cinema");
+            p.trailer = o.optString("trailer").isEmpty() ? null : o.optString("trailer");
             out.add(p);
         }
         return out;
