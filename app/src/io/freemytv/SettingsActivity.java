@@ -641,7 +641,16 @@ public class SettingsActivity extends Activity {
             l.add("Ethereum");
             l.add("Solana");
             if (dollar()) l.add(Ui.tr("Dollar"));
+            if (newsFeed()) l.add(Ui.tr("News widget"));   // last: the rows above keep their numbers
             return l.toArray(new String[0]);
+        }
+
+        private static boolean newsFeed() {
+            return !Config.NEWS_RSS.trim().isEmpty();
+        }
+
+        private int newsRow() {
+            return newsFeed() ? settingLabels().length - 1 : -1;
         }
 
         private String[] settingValues() {
@@ -657,7 +666,9 @@ public class SettingsActivity extends Activity {
             v[CITY_ROW] = !cityStatus.isEmpty() ? cityStatus : Prefs.city().isEmpty() ? "—" : Prefs.city();
             v[5] = onOff(Prefs.quotes());
             // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
-            for (int i = COIN_ROWS; i < v.length; i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
+            int coinsEnd = newsFeed() ? v.length - 1 : v.length;
+            for (int i = COIN_ROWS; i < coinsEnd; i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
+            if (newsFeed()) v[v.length - 1] = onOff(Prefs.news());
             return v;
         }
 
@@ -736,6 +747,10 @@ public class SettingsActivity extends Activity {
                 case CITY_ROW: return;
                 case 5: Prefs.setQuotes(!Prefs.quotes()); break;
                 default:
+                    if (focus == newsRow()) {
+                        Prefs.setNews(!Prefs.news());
+                        break;
+                    }
                     if (!Prefs.quotes()) return;
                     Prefs.setCoin(focus - COIN_ROWS, !Prefs.coin(focus - COIN_ROWS));
                     break;
@@ -932,12 +947,13 @@ public class SettingsActivity extends Activity {
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
             c.drawText(keys ? Ui.tr("Remote Buttons") : Ui.tr("Home Settings"),
                     LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
+            int newsRowNow = keys ? -1 : newsRow();
             for (int i = 0; i < labels.length; i++) {
                 float y = (LIST_TOP + 20 + i * (LIST_ROW_H + LIST_ROW_GAP)) * k;
                 rowRect.set(LIST_X * k, y, LIST_R * k, y + LIST_ROW_H * k);
                 float f = drawRowBackground(c, i);
                 rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
-                boolean locked = !keys && i >= COIN_ROWS && !Prefs.quotes();
+                boolean locked = !keys && i >= COIN_ROWS && i != newsRowNow && !Prefs.quotes();
                 rowValue.setColor(blend(locked ? 0x59FFFFFF : 0xB3FFFFFF, locked ? 0x591C1C1E : 0xB31C1C1E, f));
                 if (locked) rowLabel.setColor(blend(0x73FFFFFF, 0x731C1C1E, f));
                 float base = rowRect.centerY() + Ui.halfCap(rowLabel);

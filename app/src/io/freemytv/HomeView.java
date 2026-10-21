@@ -138,7 +138,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     // At the top: tabs (0 to 2) and icon-only buttons (3 to 5); the three cards
     private int tab, topIndex, cardIndex;
-    private int widgetIndex;    // with TalkBack on, the drawer's weather (0) or quotes (1) card can take the focus
+    private int widgetIndex;    // with TalkBack on, the drawer's weather (0), quotes (1) or News (2) card can take the focus
     private List<Recs.Pick> cards = new ArrayList<>();
     private final Spring[] topFocus = new Spring[TABS + 3];
     private final RectF[] topRects = new RectF[TABS + 3];
@@ -241,6 +241,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private Paint labelPaint, metaPaint, clockPaint, buttonPaint, capsuleText, tipPaint, quotePaint, staleQuote;
     private Paint rowTitle, drawerLabel, cardTitle, cardText, cardDim, cardDimRight, bigTemp, hourPaint, hourTemp;
     private Paint pricePaint, changePaint, sheetTitle;
+    private TextPaint newsPaint, newsSourcePaint;   // TextPaint: the headlines are shortened with TextUtils.ellipsize
     private TextPaint titlePaint, gridLabel, toastPaint;
     private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Paint imagePaint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
@@ -271,7 +272,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private float veilAmount = -1;
     private int veilColor;
     private HomeData.Weather textWeather;
-    private long textPricesAt = -1, textMinute = -1;
+    private long textPricesAt = -1, textMinute = -1, textNewsMinute = -1;
+    private List<HomeData.Headline> textNews;
+    private final String[] newsLine = new String[4], newsAgo = new String[4];
+    private String newsSourceText = "";
     private int textPrefs = -1;
     private String textLanguage;
     private String weatherTitle, nowTemp, highLow, sunriseText, sunsetText, staleText;
@@ -607,12 +611,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         cardDim = Ui.numbers(Ui.medium, 23 * k, 0xADFFFFFF);
         cardDimRight = Ui.text(Ui.medium, 21 * k, 0x99FFFFFF);
         cardDimRight.setTextAlign(Paint.Align.RIGHT);
+        newsSourcePaint = new TextPaint(cardDimRight);
         bigTemp = Ui.numbers(Ui.light, 100 * k, 0xFFFFFFFF);
         hourPaint = Ui.numbers(Ui.medium, 22 * k, 0xADFFFFFF);
         hourPaint.setTextAlign(Paint.Align.CENTER);
         hourTemp = Ui.numbers(Ui.medium, 26 * k, 0xF2FFFFFF);
         hourTemp.setTextAlign(Paint.Align.CENTER);
         pricePaint = Ui.numbers(Ui.medium, 26 * k, 0xF2FFFFFF);
+        newsPaint = new TextPaint(Ui.text(Ui.medium, 24 * k, 0xF2FFFFFF));
         pricePaint.setTextAlign(Paint.Align.RIGHT);
         changePaint = Ui.numbers(Ui.semibold, 21 * k, 0xFFFFFFFF);
         changePaint.setTextAlign(Paint.Align.CENTER);
@@ -1448,7 +1454,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             x += tw + gap;
         }
         float cardsTop = CARDS_TOP * k, split = left + (right - left) * 0.585f;
-        boolean wx = Prefs.weather(), qt = Prefs.quotes() && HomeData.active().length > 0;
+        boolean wx = Prefs.weather(), qt = newsCard() || quotesCard();   // qt: the right card, News or quotes
         // A card that is off gives its room to the other one.
         weatherCard.set(left, cardsTop, qt ? split - 16 * k : right, cardsTop + CARDS_H * k);
         quotesCard.set(wx ? split + 16 * k : left, cardsTop, right, cardsTop + CARDS_H * k);
@@ -1514,7 +1520,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < drawerItems.size(); i++) if (i != top) drawDrawerTile(c, i);
         if (top >= 0) drawDrawerTile(c, top);
         if (Prefs.weather()) drawWeatherCard(c, weatherCard);
-        if (Prefs.quotes() && HomeData.active().length > 0) drawQuotesCard(c, quotesCard);
+        if (newsCard()) drawNewsCard(c, quotesCard);
+        else if (quotesCard()) drawQuotesCard(c, quotesCard);
+    }
+
+    /** The drawer's right card: News when its feed is set and on (the prices stay at the top), else the quotes. */
+    private static boolean newsCard() {
+        return Prefs.news();
+    }
+
+    private static boolean quotesCard() {
+        return !newsCard() && Prefs.quotes() && HomeData.active().length > 0;
     }
 
     /** Square drawer button: symbol and name; an input with no device is dimmed. Focused: white, with dark text. */
@@ -1607,6 +1623,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             sunsetText = Ui.trf("Sunset {time}", "time", Ui.time(wx.sunset));
         }
         long minute = System.currentTimeMillis() / 60_000;
+        if (newsCard() && (data.news != textNews || minute != textNewsMinute || settings)) {
+            textNews = data.news;
+            textNewsMinute = minute;
+            float width = quotesCard.width() - 68 * k;
+            newsSourceText = TextUtils.ellipsize(data.newsSource, newsSourcePaint, width / 2, TextUtils.TruncateAt.END).toString();
+            for (int i = 0; i < newsLine.length; i++) {
+                HomeData.Headline h = i < textNews.size() ? textNews.get(i) : null;
+                newsAgo[i] = h == null || h.at == 0 ? "" : HomeData.ago(h.at);
+                newsLine[i] = h == null ? null : TextUtils.ellipsize(h.title, newsPaint,
+                        width - cardDimRight.measureText(newsAgo[i]) - 24 * k, TextUtils.TruncateAt.END).toString();
+            }
+        }
         if (data.pricesAt != textPricesAt || minute != textMinute || settings) {
             textPricesAt = data.pricesAt;
             textMinute = minute;
@@ -1638,7 +1666,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * sunrise and sunset, "12 min ago").
      */
     private String drawerCardsKey() {
-        return data.weatherAt + "|" + data.pricesAt + "|" + Prefs.version + "|" + Ui.language + "|"
+        return data.weatherAt + "|" + data.pricesAt + "|" + data.newsAt + "|" + Prefs.version + "|" + Ui.language + "|"
                 + Float.floatToIntBits(dark()) + "|" + System.currentTimeMillis() / 60_000;
     }
 
@@ -1668,7 +1696,31 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    private final Snapshot weatherSnapshot = new Snapshot(), quotesSnapshot = new Snapshot();
+    private final Snapshot weatherSnapshot = new Snapshot(), quotesSnapshot = new Snapshot(), newsSnapshot = new Snapshot();
+
+    /** The latest headlines from news_rss, each with how old it is. */
+    private void drawNewsCard(Canvas c, RectF r) {
+        drawerCard(c, r);
+        if (Ui.LEGACY) newsSnapshot.draw(c, r, drawerCardsKey(), cc -> drawNews(cc, r));
+        else drawNews(c, r);
+    }
+
+    private void drawNews(Canvas c, RectF r) {
+        float x = r.left + 34 * k, right = r.right - 34 * k;
+        refreshDrawerText();
+        c.drawText(Ui.tr("News"), x, r.top + 54 * k, cardTitle);
+        c.drawText(newsSourceText, right, r.top + 54 * k, cardDimRight);
+        newsPaint.setColor(drawerInk(0.95f));
+        if (newsLine[0] == null) {
+            c.drawText(Ui.tr("No news right now."), x, r.top + 120 * k, cardDim);
+            return;
+        }
+        for (int i = 0; i < newsLine.length && newsLine[i] != null; i++) {
+            float base = r.top + (106 + 50 * i) * k;
+            c.drawText(newsLine[i], x, base, newsPaint);
+            c.drawText(newsAgo[i], right, base, cardDimRight);
+        }
+    }
 
     private void drawPrices(Canvas c, RectF r) {
         float x = r.left + 34 * k, right = r.right - 34 * k;
@@ -2410,7 +2462,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < shelf.size(); i++) out.add(a11yId(Z_SHELF, i));
         for (int i = 0; i < drawerItems.size(); i++) out.add(a11yId(Z_DRAWER, i));
         if (drawerOpen && Prefs.weather()) out.add(a11yId(WIDGETS, 0));
-        if (drawerOpen && Prefs.quotes() && HomeData.active().length > 0) out.add(a11yId(WIDGETS, 1));
+        if (drawerOpen && quotesCard()) out.add(a11yId(WIDGETS, 1));
+        if (drawerOpen && newsCard()) out.add(a11yId(WIDGETS, 2));
     }
 
     private String a11yText(int id) {
@@ -2430,7 +2483,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 }
                 return label(shelf, i);
             case Z_DRAWER: return label(drawerItems, i);
-            case WIDGETS: return i == 0 ? weatherText() : quotesText();
+            case WIDGETS: return i == 0 ? weatherText() : i == 1 ? quotesText() : newsText();
             default: return "";
         }
     }
@@ -2505,7 +2558,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         List<Integer> out = new ArrayList<>();
         if (!drawerOpen) return out;
         if (Prefs.weather()) out.add(0);
-        if (Prefs.quotes() && HomeData.active().length > 0) out.add(1);
+        if (quotesCard()) out.add(1);
+        if (newsCard()) out.add(2);
         return out;
     }
 
@@ -2599,6 +2653,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /** The quotes card as TalkBack reads it: each coin with its price and 24 h change. */
+    private String newsText() {
+        StringBuilder s = new StringBuilder(Ui.tr("News")).append(", ").append(data.newsSource).append('.');
+        for (HomeData.Headline h : data.news.subList(0, Math.min(4, data.news.size()))) s.append(' ').append(h.title).append('.');
+        return s.toString();
+    }
+
     private String quotesText() {
         StringBuilder s = new StringBuilder(Ui.tr("Crypto"));
         String stale = HomeData.staleness(data.pricesAt, 5 * 60_000L);
