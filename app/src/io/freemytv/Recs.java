@@ -50,6 +50,8 @@ final class Recs {
 
     /** The home screen's "In Cinemas" tab: what's in your country's cinemas now (now(CINEMA)). */
     static final String CINEMA = "cinema";
+    /** What each home screen tab shows (null = Explore): wanted() keeps all their picks' images ready. */
+    static final String[] TAB_KINDS = {null, "movie", "tv", CINEMA};
 
     interface Listener { void onRecs(); }
 
@@ -360,7 +362,7 @@ final class Recs {
     List<Pick> wanted() {
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (String kind : new String[] {null, "movie", "tv", CINEMA}) {
+        for (String kind : TAB_KINDS) {
             for (Pick p : now(kind)) if (seen.add(key(p))) out.add(p);
         }
         return out;
@@ -677,7 +679,8 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 10 : 4)) images.remove(images.keySet().iterator().next());
+                // Every tab's three, plus one: fewer and the cards on screen are evicted and reload (they blink).
+                while (images.size() > (forLight ? 3 * TAB_KINDS.length + 1 : 4)) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {

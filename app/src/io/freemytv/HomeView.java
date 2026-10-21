@@ -100,7 +100,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final int L_INK = 0xFF1D1D1F, L_DIM = 0xFF6E6E73, L_FAINT = 0xFF8E8E93;
     private static String[] tabs;
     private static int tabsGeneration = -1;
-    private static final String[] TAB_KIND = {null, "movie", "tv", Recs.CINEMA};
+    private static final String[] TAB_KIND = Recs.TAB_KINDS;
     /** The tabs come first in the top row (0 to TABS - 1), then the three icon-only buttons. */
     private static final int TABS = TAB_KIND.length;
     private static final int Z_TOP = 4, Z_CARDS = 5;
